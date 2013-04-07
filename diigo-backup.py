@@ -1,10 +1,10 @@
 #!/usr/bin/python
 """
-diigo.py - a library and utility for manipulating diigo bookmarks.
-depends on demjson - http://deron.meranda.us/python/demjson/
+diigo.py - a utility for backing up Diigo bookmarks.
 """
 
-# Copyright (c) 2008 Kliakhandler Kosta <Kliakhandler@Kosta.tk>
+# Copyright (c) 2013 Claus Conrad <http://www.clausconrad.com/>
+# Based on code (c) 2008 Kliakhandler Kosta <Kliakhandler@Kosta.tk>
 
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -19,9 +19,7 @@ depends on demjson - http://deron.meranda.us/python/demjson/
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import demjson # for encoding/decoding json<->python
-import urllib2 # For interacting with the diigo servers
-import urllib # For encoding queries to be transmitted via POST
+import urllib2 # For interacting with the Diigo servers
 import time # For waiting between queries
 import sys # For the logging methods.
 from optparse import OptionParser # For parsing commandline options.
@@ -34,29 +32,30 @@ DEBUG=6
 FULL=9
 # /Constants
 
-def getUserBookmarks(username):
+def getUserBookmarks(username, apikey):
     """
-    Takes a username from which to extract the bookmarks.
-    Optionaly takes a password to extract private bookmarks.
-    Returns a list with the user's bookmarks.
+    Takes a username from which to extract the bookmarks
+    and the application's API key.
+    Returns the user's bookmarks in JSON format.
 
     This function does not handle authentication and therefore
-    urllib2 should be set up correctly in advance.
+    urllib2 should be set up correctly in advance (see
+    "basicAuthSetup" method)
     """
 
     response = ''
     json = '[]'
     start = 0
-    # The diigo api returns up to 100 bookmarks at a time.
+    # The Diigo API returns up to 100 bookmarks at a time.
     # Therefore we iterate until we stop getting bookmarks.
     while response != '[]':
-        json = json[:-1] + response[1:-1] + json[-1:]
+        json = json[:-1] + response[1:-1] + ',' + json[-1:]
 
-        # Get the bookmarks in json format from the diigo api
+        # Get the bookmarks in json format from the Diigo api
         Log("Getting 100 bookmarks starting from position "
         + str(start), DEBUG)
         bookmarks = urllib2.urlopen(BOOKMARKS_URL + '?user=' + username
-                                    +'&start=' + str(start))
+            +'&start=' + str(start) + '&key=' + apikey + '&filter=all&count=100')
         response = bookmarks.read()
         Log("Response: \n" + response, FULL)
 
@@ -64,72 +63,12 @@ def getUserBookmarks(username):
         time.sleep(2)
         start += 100
 
-    # Turns the json string bookmark array into a python
-    # dict object and returns it.
-    return demjson.decode(json)
-
-
-def addUserBookmarks(username, bookmarks):
-    """
-    Takes a username for which we are adding bookmarks and list
-    containint the bookmarks to be added.
-
-    This function does not handle authentication and therefore
-    urllib2 should be set up correctly in advance.
-    """
-
-    Log("Formatting bookmarks for sending", DEBUG)
-    for bookmark in bookmarks:
-        # Delete unnecessary fields to conserve bandwidth.
-        # The diigo api ignores them at the moment.
-        if bookmark['user']: del bookmark['user']
-        if bookmark['created_at']: del bookmark['created_at']
-        if bookmark['updated_at']: del bookmark['updated_at']
-
-        if type(bookmark) == dict:
-            # The diigo api requires the tag list to be a comma seperated
-            # string, so if it is a dict we parse and format it
-            tags = ''
-            for tag in bookmark['tags']:
-                tags += tag + ', '
-            else:
-                tags = tags[:-2]
-            bookmark['tags'] = tags
-
-    # The diigo api only allows to add up to 100 bookmarks at a time
-    # so we iterate and send 100 bookmarks each time.
-    iterations = len(bookmarks)/100 + 1
-
-    Log("Submitting bookmarks to diigo", DEBUG)
-    for range_index in range(iterations):
-        # Take 100 bookmarks or what's left when there is less then 100
-        if range_index == iterations - 1:
-            partial_bookmarks = bookmarks[range_index*100 : ]
-
-        else:
-            partial_bookmarks = bookmarks[range_index*100 :
-            (range_index+1)*100]
-
-        Log("Iteration " + str(range_index) + " Of " +
-            str(iterations), DEBUG)
-        Log("The python list:\n" + str(partial_bookmarks), FULL)
-
-        # Turn the list into json for sending over http
-        json = demjson.encode(partial_bookmarks)
-        Log("The json to be sent:\n" + json, FULL)
-
-        # Encode the json into a safe format for transmission
-        data = urllib.urlencode({'bookmarks':json})
-        Log("The url-encoded data to be sent:\n" + data, FULL)
-
-        # Submit the bookmark
-        response = urllib2.urlopen(BOOKMARKS_URL, data)
-        Log("Server response: " + response.read(), DEBUG)
-
-        # Sleep a little to not load up the api servers
-        time.sleep(2)
-
-    return len(bookmarks)
+    # Remove pre- or appended comma
+    if json[1:2] == ",":
+        json = json[0:1] + json[2:]
+    if json[-2:-1] == ",":
+        json = json[:-2] + json[-1:]
+    return json
 
 
 def main():
@@ -142,31 +81,21 @@ def main():
     else:
         setverbosity(INFO)
 
-    # Set up urllib2 to authenticate with the old user's credentials.
+    # Set up urllib2 to authenticate with the user's credentials.
     basicAuthSetup(options.username, options.password, API_SERVER)
     Log("Set basic authentication with following credentials:\n" +
         "User: " + options.username + " Password: " + options.password,
         DEBUG)
     try:
-        bookmarks = getUserBookmarks(options.username)
+        bookmarks = getUserBookmarks(options.username, options.apikey)
     except urllib2.HTTPError, inst:
+        bookmarks = None
         FatalError("Error: " + str(inst) + "\n" + inst.read())
 
     Log("Bookmarks retrieved:\n" + str(bookmarks), FULL)
     Log("Retrieved " + str(len(bookmarks)) + " bookmarks.", INFO)
 
-    # Set up urllib2 to authenticate with the new user's credentials.
-    basicAuthSetup(options.newuser, options.newpassword, API_SERVER)
-    Log("Set basic authentication with following credentials:\n" +
-        "User: " + options.newuser + " Password: " + options.newpassword,
-        DEBUG)
-
-    try:
-        # Add the bookmarks to the new user and print the result:
-        Log("Added " + str(addUserBookmarks(options.newuser, bookmarks)) +
-            " bookmarks", 3)
-    except urllib2.HTTPError, inst:
-        FatalError("Error: " + str(inst) + "\n" + inst.read())
+    print bookmarks
 
 
 def basicAuthSetup(user, password, naked_url):
@@ -190,7 +119,7 @@ def basicAuthSetup(user, password, naked_url):
 
 def commandlineOptions():
     """
-    Defines an parrses the command line options.
+    Defines and parses the command line options.
     """
     parser = OptionParser()
     parser.add_option("-u", "--user", dest="username",
@@ -199,17 +128,19 @@ def commandlineOptions():
     parser.add_option("-p", "--pass", dest="password",
         help="The given user's password",
         metavar="PASSW")
-    parser.add_option("-n", "--newuser", dest="newuser",
-        help="The new user for the bookmarks",
-        metavar="NEWUSER")
-    parser.add_option("-e", "--newpassword", dest="newpassword",
-        help="The password for the new user",
-        metavar="NEWPASS")
+    parser.add_option("-a", "--apikey", dest="apikey",
+        help="API key (see https://www.diigo.com/api_keys/new/)",
+        metavar="APIKEY")
     parser.add_option("-v", "--verbosity", dest="verbosity",
         help="Amount of output to show on screen",
         metavar="0-9")
 
     (options, args) = parser.parse_args()
+
+    if not options.username or not options.password or not options.apikey:
+        parser.print_help()
+        sys.exit(1)
+
     return (options, args)
 
 
